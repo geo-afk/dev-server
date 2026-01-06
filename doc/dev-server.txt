@@ -1,0 +1,27 @@
+*dev-server.txt*    Manage development servers inside Neovim
+
+dev-server.nvim                                      *dev-server*
+
+A lightweight plugin for running and toggling development servers in Neovim
+terminal windows.
+
+COMMANDS                                                    *dev-server-commands*
+
+:DevServerToggle {name}                                      *DevServerToggle*
+    Show or hide the terminal for server {name}.
+
+:DevServerRestart {name}                                    *DevServerRestart*
+    Restart the server {name}.
+
+:DevServerStop {name}                                       *DevServerStop*
+    Stop the server {name}.
+
+:DevServerStatus [name]                                     *DevServerStatus*
+    Show status of all servers or a specific one.
+
+SETUP                                                       *dev-server-setup*
+
+See the README.md for full configuration examples.
+
+==============================================================================
+vim:tw=78:ts=8:ft=help:norl:
