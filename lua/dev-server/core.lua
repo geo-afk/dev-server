@@ -534,11 +534,14 @@ function M.get_status(server_name)
 	end
 end
 
----Get statusline component for a specific server or first running server
----@param server_name string|nil Specific server name
----@return string status Empty string if no active server
-function M.get_statusline(server_name)
-	-- If specific server requested
+---Get statusline component for current buffer's project
+---@param server_name string|nil Specific server name (optional)
+---@param bufnr number|nil Buffer number (defaults to current buffer)
+---@return string status Empty string if no relevant active server
+function M.get_statusline(server_name, bufnr)
+	bufnr = bufnr or vim.api.nvim_get_current_buf()
+
+	-- If specific server requested, just show that
 	if server_name then
 		local server = M.servers[server_name]
 		if server and M._is_job_running(server.job_id) then
@@ -548,11 +551,18 @@ function M.get_statusline(server_name)
 		return ""
 	end
 
-	-- Otherwise, show first running server
-	for name, server in pairs(M.servers) do
-		if M._is_job_running(server.job_id) then
+	-- Check if current buffer is in a project with available servers
+	local in_project, available_servers = M.is_in_project(bufnr)
+	if not in_project or not available_servers or #available_servers == 0 then
+		return ""
+	end
+
+	-- Show first running server that's relevant to this project
+	for _, server_name_iter in ipairs(available_servers) do
+		local server = M.servers[server_name_iter]
+		if server and M._is_job_running(server.job_id) then
 			local icon = server.is_visible and "●" or "○"
-			return string.format(" %s %s", icon, name)
+			return string.format(" %s %s", icon, server_name_iter)
 		end
 	end
 

@@ -21,8 +21,9 @@ M.unregister = core.unregister
 -- ============================================================================
 
 ---Get statusline component
----@param server_name string|nil Optional server name
----@return string statusline Empty string if no active server
+---@param server_name string|nil Optional server name (ignores project context if provided)
+---@param bufnr number|nil Buffer number (defaults to current buffer)
+---@return string statusline Empty string if no relevant active server
 M.get_statusline = core.get_statusline
 
 -- ============================================================================
