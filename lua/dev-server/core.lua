@@ -2,6 +2,7 @@ local M = {}
 
 -- State storage for all servers
 M.servers = {}
+M.config = {}
 
 -- Default configuration
 M.default_config = {
@@ -10,41 +11,262 @@ M.default_config = {
 		position = "botright",
 		size = 15,
 	},
+	-- Default keymaps (can be disabled with false)
+	keymaps = {
+		toggle = "<leader>dt",
+		restart = "<leader>dr",
+		stop = "<leader>ds",
+		status = "<leader>dS",
+	},
+	-- Auto-start servers when entering project
+	auto_start = false,
+	-- Show notifications
+	notifications = {
+		enabled = true,
+		level = {
+			start = vim.log.levels.INFO,
+			stop = vim.log.levels.INFO,
+			error = vim.log.levels.ERROR,
+		},
+	},
+	-- Server definitions with file type associations
+	servers = {},
 }
+
+-- ============================================================================
+-- File Type Detection
+-- ============================================================================
+
+M.filetype_mappings = {
+	-- JavaScript/TypeScript ecosystems
+	javascript = { "npm", "node", "bun", "deno" },
+	typescript = { "npm", "node", "bun", "deno" },
+	javascriptreact = { "npm", "node", "bun", "deno" },
+	typescriptreact = { "npm", "node", "bun", "deno" },
+	vue = { "npm", "node" },
+	svelte = { "npm", "node" },
+
+	-- Python
+	python = { "python", "django", "flask" },
+
+	-- Ruby
+	ruby = { "rails", "sinatra" },
+
+	-- Go
+	go = { "go" },
+
+	-- Rust
+	rust = { "cargo" },
+
+	-- PHP
+	php = { "php" },
+
+	-- Java/Kotlin
+	java = { "maven", "gradle" },
+	kotlin = { "maven", "gradle" },
+
+	-- Other web
+	html = { "npm", "node" },
+	css = { "npm", "node" },
+	scss = { "npm", "node" },
+	sass = { "npm", "node" },
+}
+
+-- Project marker files for detection
+M.project_markers = {
+	-- JavaScript/Node
+	{ "package.json", { "npm", "node", "bun", "deno" } },
+	{ "deno.json", { "deno" } },
+	{ "bun.lockb", { "bun" } },
+
+	-- Python
+	{ "requirements.txt", { "python" } },
+	{ "setup.py", { "python" } },
+	{ "pyproject.toml", { "python" } },
+	{ "manage.py", { "django" } },
+	{ "app.py", { "flask" } },
+
+	-- Ruby
+	{ "Gemfile", { "rails", "sinatra" } },
+	{ "config.ru", { "rails", "sinatra" } },
+
+	-- Go
+	{ "go.mod", { "go" } },
+
+	-- Rust
+	{ "Cargo.toml", { "cargo" } },
+
+	-- PHP
+	{ "composer.json", { "php" } },
+
+	-- Java/Kotlin
+	{ "pom.xml", { "maven" } },
+	{ "build.gradle", { "gradle" } },
+	{ "build.gradle.kts", { "gradle" } },
+
+	-- Generic
+	{ ".git", nil }, -- Any git project
+}
+
+---@param bufnr number|nil Buffer number (defaults to current)
+---@return string|nil filetype The detected filetype
+function M.get_buffer_filetype(bufnr)
+	bufnr = bufnr or vim.api.nvim_get_current_buf()
+
+	local ok, ft = pcall(vim.api.nvim_get_option_value, "filetype", { buf = bufnr })
+	if not ok or ft == "" then
+		return nil
+	end
+
+	return ft
+end
+
+---@param filetype string
+---@return string[]|nil server_types Compatible server types
+function M.get_servers_for_filetype(filetype)
+	return M.filetype_mappings[filetype]
+end
+
+-- ============================================================================
+-- Project Detection
+-- ============================================================================
+
+---Find project root by searching upward for marker files
+---@param start_path string|nil Starting directory (defaults to current file)
+---@return string|nil root_path The project root directory
+---@return string|nil marker The marker file that was found
+function M.find_project_root(start_path)
+	start_path = start_path or vim.fn.expand("%:p:h")
+
+	-- Handle empty buffers or invalid paths
+	if start_path == "" or start_path == "." then
+		start_path = vim.fn.getcwd()
+	end
+
+	local current_dir = start_path
+	local home_dir = vim.fn.expand("~")
+
+	-- Search upward for project markers
+	while current_dir ~= "/" and current_dir ~= "." and current_dir ~= home_dir do
+		for _, marker_data in ipairs(M.project_markers) do
+			local marker = marker_data[1]
+			local marker_path = current_dir .. "/" .. marker
+
+			if vim.fn.filereadable(marker_path) == 1 or vim.fn.isdirectory(marker_path) == 1 then
+				return current_dir, marker
+			end
+		end
+
+		-- Move up one directory
+		local parent = vim.fn.fnamemodify(current_dir, ":h")
+		if parent == current_dir then
+			break
+		end
+		current_dir = parent
+	end
+
+	return nil, nil
+end
+
+---Check if current buffer is in a project with configured servers
+---@param bufnr number|nil Buffer number (defaults to current)
+---@return boolean is_in_project
+---@return string[]|nil available_servers
+function M.is_in_project(bufnr)
+	bufnr = bufnr or vim.api.nvim_get_current_buf()
+
+	-- Get buffer path
+	local buf_path = vim.api.nvim_buf_get_name(bufnr)
+	if buf_path == "" then
+		return false, nil
+	end
+
+	-- Find project root
+	local root, marker = M.find_project_root(vim.fn.fnamemodify(buf_path, ":p:h"))
+	if not root then
+		return false, nil
+	end
+
+	-- Check if any configured servers match this project
+	local available_servers = {}
+
+	-- First, check marker-based detection
+	for _, marker_data in ipairs(M.project_markers) do
+		if marker_data[1] == marker and marker_data[2] then
+			for _, server_type in ipairs(marker_data[2]) do
+				if M.servers[server_type] then
+					table.insert(available_servers, server_type)
+				end
+			end
+		end
+	end
+
+	-- Also check filetype-based detection
+	local ft = M.get_buffer_filetype(bufnr)
+	if ft then
+		local ft_servers = M.get_servers_for_filetype(ft)
+		if ft_servers then
+			for _, server_type in ipairs(ft_servers) do
+				if M.servers[server_type] and not vim.tbl_contains(available_servers, server_type) then
+					table.insert(available_servers, server_type)
+				end
+			end
+		end
+	end
+
+	return #available_servers > 0, available_servers
+end
 
 -- ============================================================================
 -- Private Helper Functions
 -- ============================================================================
 
+function M._notify(msg, level)
+	if M.config.notifications and M.config.notifications.enabled then
+		vim.notify(msg, level)
+	end
+end
+
 function M._is_job_running(job_id)
-	if not job_id then
+	if not job_id or job_id <= 0 then
 		return false
 	end
-	return vim.fn.jobwait({ job_id }, 0)[1] == -1
+
+	local ok, result = pcall(vim.fn.jobwait, { job_id }, 0)
+	if not ok then
+		return false
+	end
+
+	return result[1] == -1
 end
 
 function M._stop_job(job_id)
 	if job_id and M._is_job_running(job_id) then
-		vim.fn.jobstop(job_id)
+		pcall(vim.fn.jobstop, job_id)
 	end
 end
 
 function M._create_terminal_buffer()
-	local buf_id = vim.api.nvim_create_buf(false, true)
-	vim.api.nvim_set_option_value("bufhidden", "hide", { buf = buf_id })
-	vim.api.nvim_set_option_value("buflisted", false, { buf = buf_id })
-	vim.api.nvim_set_option_value("swapfile", false, { buf = buf_id })
+	local ok, buf_id = pcall(vim.api.nvim_create_buf, false, true)
+	if not ok then
+		return nil
+	end
 
-	vim.api.nvim_buf_set_keymap(buf_id, "t", "<C-\\><C-n>", "<C-\\><C-n>", {
+	pcall(vim.api.nvim_set_option_value, "bufhidden", "hide", { buf = buf_id })
+	pcall(vim.api.nvim_set_option_value, "buflisted", false, { buf = buf_id })
+	pcall(vim.api.nvim_set_option_value, "swapfile", false, { buf = buf_id })
+
+	pcall(vim.api.nvim_buf_set_keymap, buf_id, "t", "<C-\\><C-n>", "<C-\\><C-n>", {
 		noremap = true,
 		silent = true,
 		desc = "Exit terminal mode",
 	})
+
 	return buf_id
 end
 
 function M._start_terminal_in_buffer(buf_id, cmd, cwd)
-	local job_id = vim.api.nvim_buf_call(buf_id, function()
+	local ok, job_id = pcall(vim.api.nvim_buf_call, buf_id, function()
 		local opts = {
 			on_exit = function(j_id, exit_code, _)
 				M._handle_job_exit(j_id, exit_code)
@@ -55,6 +277,11 @@ function M._start_terminal_in_buffer(buf_id, cmd, cwd)
 		end
 		return vim.fn.termopen(cmd, opts)
 	end)
+
+	if not ok or not job_id or job_id <= 0 then
+		return nil
+	end
+
 	return job_id
 end
 
@@ -63,9 +290,14 @@ function M._handle_job_exit(job_id, exit_code)
 		if server.job_id == job_id then
 			server.exit_code = exit_code
 			server.job_id = nil
-			local level = exit_code == 0 and vim.log.levels.INFO or vim.log.levels.WARN
+
+			local level = M.config.notifications.level.stop
+			if exit_code ~= 0 then
+				level = M.config.notifications.level.error
+			end
+
 			local msg = string.format("Server '%s' exited with code %d", name, exit_code)
-			vim.notify(msg, level)
+			M._notify(msg, level)
 			break
 		end
 	end
@@ -75,12 +307,18 @@ function M._create_split_window(buf_id, config)
 	local size = config.size or 15
 	local position = config.position or "botright"
 	local split_cmd = config.type == "vsplit" and "vsplit" or "split"
-	vim.cmd(position .. " " .. size .. split_cmd)
+
+	local ok = pcall(vim.cmd, position .. " " .. size .. split_cmd)
+	if not ok then
+		return nil
+	end
+
 	local win_id = vim.api.nvim_get_current_win()
-	vim.api.nvim_win_set_buf(win_id, buf_id)
-	vim.api.nvim_set_option_value("number", false, { win = win_id })
-	vim.api.nvim_set_option_value("relativenumber", false, { win = win_id })
-	vim.api.nvim_set_option_value("signcolumn", "no", { win = win_id })
+	pcall(vim.api.nvim_win_set_buf, win_id, buf_id)
+	pcall(vim.api.nvim_set_option_value, "number", false, { win = win_id })
+	pcall(vim.api.nvim_set_option_value, "relativenumber", false, { win = win_id })
+	pcall(vim.api.nvim_set_option_value, "signcolumn", "no", { win = win_id })
+
 	return win_id
 end
 
@@ -115,16 +353,21 @@ function M._create_floating_window(buf_id, config)
 		border = opts.border or "rounded",
 	}
 
-	local win_id = vim.api.nvim_open_win(buf_id, true, win_opts)
-	vim.api.nvim_set_option_value("number", false, { win = win_id })
-	vim.api.nvim_set_option_value("relativenumber", false, { win = win_id })
-	vim.api.nvim_set_option_value("signcolumn", "no", { win = win_id })
+	local ok, win_id = pcall(vim.api.nvim_open_win, buf_id, true, win_opts)
+	if not ok then
+		return nil
+	end
+
+	pcall(vim.api.nvim_set_option_value, "number", false, { win = win_id })
+	pcall(vim.api.nvim_set_option_value, "relativenumber", false, { win = win_id })
+	pcall(vim.api.nvim_set_option_value, "signcolumn", "no", { win = win_id })
+
 	return win_id
 end
 
 function M._hide_window(win_id)
 	if win_id and vim.api.nvim_win_is_valid(win_id) then
-		vim.api.nvim_win_close(win_id, false)
+		pcall(vim.api.nvim_win_close, win_id, false)
 	end
 end
 
@@ -134,70 +377,100 @@ end
 
 function M.toggle(server_name)
 	if not M.servers[server_name] then
-		vim.notify("Server '" .. server_name .. "' not configured", vim.log.levels.ERROR)
-		return
+		M._notify("Server '" .. server_name .. "' not configured", vim.log.levels.ERROR)
+		return false
 	end
 
 	local server = M.servers[server_name]
 
+	-- Hide if already visible
 	if server.win_id and vim.api.nvim_win_is_valid(server.win_id) then
 		M._hide_window(server.win_id)
 		server.win_id = nil
 		server.is_visible = false
-		return
+		return true
 	end
 
+	-- Determine if we need a new buffer
 	local needs_new_buffer = false
 
 	if not server.buf_id or not vim.api.nvim_buf_is_valid(server.buf_id) then
 		needs_new_buffer = true
 	elseif not M._is_job_running(server.job_id) then
-		vim.api.nvim_buf_delete(server.buf_id, { force = true })
+		pcall(vim.api.nvim_buf_delete, server.buf_id, { force = true })
 		needs_new_buffer = true
 	end
 
 	if needs_new_buffer then
 		server.buf_id = M._create_terminal_buffer()
-		server.job_id = M._start_terminal_in_buffer(server.buf_id, server.config.cmd, server.config.cwd)
-		if not server.job_id or server.job_id <= 0 then
-			vim.notify("Failed to start server '" .. server_name .. "'", vim.log.levels.ERROR)
-			return
+		if not server.buf_id then
+			M._notify("Failed to create buffer for '" .. server_name .. "'", vim.log.levels.ERROR)
+			return false
 		end
+
+		-- Resolve cwd
+		local cwd = server.config.cwd
+		if not cwd or cwd == "" then
+			local root = M.find_project_root()
+			cwd = root or vim.fn.getcwd()
+		end
+
+		server.job_id = M._start_terminal_in_buffer(server.buf_id, server.config.cmd, cwd)
+		if not server.job_id or server.job_id <= 0 then
+			M._notify("Failed to start server '" .. server_name .. "'", vim.log.levels.ERROR)
+			return false
+		end
+
+		M._notify("Server '" .. server_name .. "' started", M.config.notifications.level.start)
 	end
 
-	local win_config = server.config.window or M.default_config.window
+	-- Create window
+	local win_config = server.config.window or M.config.window
+	local win_id
+
 	if win_config.type == "float" then
-		server.win_id = M._create_floating_window(server.buf_id, win_config)
+		win_id = M._create_floating_window(server.buf_id, win_config)
 	else
-		server.win_id = M._create_split_window(server.buf_id, win_config)
+		win_id = M._create_split_window(server.buf_id, win_config)
 	end
 
+	if not win_id then
+		M._notify("Failed to create window for '" .. server_name .. "'", vim.log.levels.ERROR)
+		return false
+	end
+
+	server.win_id = win_id
 	server.is_visible = true
 	vim.cmd("startinsert")
+
+	return true
 end
 
 function M.restart(server_name)
 	local server = M.servers[server_name]
 	if not server then
-		vim.notify("Server '" .. server_name .. "' not configured", vim.log.levels.ERROR)
-		return
+		M._notify("Server '" .. server_name .. "' not configured", vim.log.levels.ERROR)
+		return false
 	end
 
 	local was_visible = server.is_visible
 
+	-- Hide window
 	if server.is_visible then
 		M._hide_window(server.win_id)
 		server.win_id = nil
 		server.is_visible = false
 	end
 
+	-- Stop job
 	if M._is_job_running(server.job_id) then
 		M._stop_job(server.job_id)
 		vim.wait(100)
 	end
 
+	-- Clean up buffer
 	if server.buf_id and vim.api.nvim_buf_is_valid(server.buf_id) then
-		vim.api.nvim_buf_delete(server.buf_id, { force = true })
+		pcall(vim.api.nvim_buf_delete, server.buf_id, { force = true })
 	end
 
 	server.buf_id = nil
@@ -205,20 +478,22 @@ function M.restart(server_name)
 	server.exit_code = nil
 
 	if was_visible then
-		vim.notify("Restarting server '" .. server_name .. "'...", vim.log.levels.INFO)
+		M._notify("Restarting server '" .. server_name .. "'...", vim.log.levels.INFO)
 		vim.defer_fn(function()
 			M.toggle(server_name)
 		end, 200)
 	else
-		vim.notify("Server '" .. server_name .. "' stopped", vim.log.levels.INFO)
+		M._notify("Server '" .. server_name .. "' stopped", vim.log.levels.INFO)
 	end
+
+	return true
 end
 
 function M.stop(server_name)
 	local server = M.servers[server_name]
 	if not server then
-		vim.notify("Server '" .. server_name .. "' not configured", vim.log.levels.ERROR)
-		return
+		M._notify("Server '" .. server_name .. "' not configured", vim.log.levels.ERROR)
+		return false
 	end
 
 	if server.is_visible then
@@ -229,8 +504,10 @@ function M.stop(server_name)
 
 	if M._is_job_running(server.job_id) then
 		M._stop_job(server.job_id)
-		vim.notify("Server '" .. server_name .. "' stopped", vim.log.levels.INFO)
+		M._notify("Server '" .. server_name .. "' stopped", M.config.notifications.level.stop)
 	end
+
+	return true
 end
 
 function M.stop_all()
@@ -239,6 +516,7 @@ function M.stop_all()
 			M._stop_job(server.job_id)
 		end
 	end
+	return true
 end
 
 function M.get_status(server_name)
@@ -256,6 +534,31 @@ function M.get_status(server_name)
 	end
 end
 
+---Get statusline component for a specific server or first running server
+---@param server_name string|nil Specific server name
+---@return string status Empty string if no active server
+function M.get_statusline(server_name)
+	-- If specific server requested
+	if server_name then
+		local server = M.servers[server_name]
+		if server and M._is_job_running(server.job_id) then
+			local icon = server.is_visible and "●" or "○"
+			return string.format(" %s %s", icon, server_name)
+		end
+		return ""
+	end
+
+	-- Otherwise, show first running server
+	for name, server in pairs(M.servers) do
+		if M._is_job_running(server.job_id) then
+			local icon = server.is_visible and "●" or "○"
+			return string.format(" %s %s", icon, name)
+		end
+	end
+
+	return ""
+end
+
 function M.list()
 	local servers = {}
 	for name, _ in pairs(M.servers) do
@@ -264,17 +567,25 @@ function M.list()
 			status = M.get_status(name),
 		})
 	end
+	table.sort(servers, function(a, b)
+		return a.name < b.name
+	end)
 	return servers
 end
 
 function M.register(name, config)
-	if not config.cmd then
-		vim.notify("Server config must include 'cmd'", vim.log.levels.ERROR)
+	if not config or type(config) ~= "table" then
+		M._notify("Server config must be a table", vim.log.levels.ERROR)
+		return false
+	end
+
+	if not config.cmd or config.cmd == "" then
+		M._notify("Server config must include 'cmd'", vim.log.levels.ERROR)
 		return false
 	end
 
 	local server_config = vim.tbl_deep_extend("force", {
-		window = M.default_config.window,
+		window = M.config.window,
 	}, config)
 
 	M.servers[name] = {
@@ -285,6 +596,7 @@ function M.register(name, config)
 		is_visible = false,
 		exit_code = nil,
 	}
+
 	return true
 end
 
@@ -297,28 +609,97 @@ function M.unregister(name)
 	return false
 end
 
+-- ============================================================================
+-- Keymapping System
+-- ============================================================================
+
+---Setup buffer-local keymaps for project buffers
+---@param bufnr number Buffer number
+function M._setup_buffer_keymaps(bufnr)
+	if not M.config.keymaps then
+		return
+	end
+
+	local in_project, available_servers = M.is_in_project(bufnr)
+	if not in_project or not available_servers or #available_servers == 0 then
+		return
+	end
+
+	-- Get primary server (first in list)
+	local primary_server = available_servers[1]
+
+	local function map(mode, lhs, rhs, desc)
+		if not lhs or lhs == false then
+			return
+		end
+		vim.api.nvim_buf_set_keymap(bufnr, mode, lhs, "", {
+			callback = rhs,
+			noremap = true,
+			silent = true,
+			desc = desc,
+		})
+	end
+
+	-- Setup keymaps
+	map("n", M.config.keymaps.toggle, function()
+		M.toggle(primary_server)
+	end, "Toggle dev server")
+
+	map("n", M.config.keymaps.restart, function()
+		M.restart(primary_server)
+	end, "Restart dev server")
+
+	map("n", M.config.keymaps.stop, function()
+		M.stop(primary_server)
+	end, "Stop dev server")
+
+	map("n", M.config.keymaps.status, function()
+		local status = M.get_status(primary_server)
+		vim.notify("Server '" .. primary_server .. "': " .. status, vim.log.levels.INFO)
+	end, "Show dev server status")
+end
+
+-- ============================================================================
+-- Setup and Initialization
+-- ============================================================================
+
 function M.setup(opts)
 	opts = opts or {}
 
-	if opts.default_window then
-		M.default_config.window = vim.tbl_extend("force", M.default_config.window, opts.default_window)
-	end
+	-- Merge configuration
+	M.config = vim.tbl_deep_extend("force", M.default_config, opts)
 
-	if opts.servers then
-		for name, config in pairs(opts.servers) do
+	-- Register servers
+	if M.config.servers then
+		for name, config in pairs(M.config.servers) do
 			M.register(name, config)
 		end
 	end
 
+	-- Create commands
 	M._create_commands()
+
+	-- Setup autocommands
 	M._setup_autocmds()
+
+	return true
 end
 
 function M._create_commands()
 	vim.api.nvim_create_user_command("DevServerToggle", function(o)
-		M.toggle(o.args)
+		if o.args == "" then
+			-- Auto-detect server from current buffer
+			local in_project, available_servers = M.is_in_project()
+			if in_project and available_servers and #available_servers > 0 then
+				M.toggle(available_servers[1])
+			else
+				M._notify("No server configured for current buffer", vim.log.levels.WARN)
+			end
+		else
+			M.toggle(o.args)
+		end
 	end, {
-		nargs = 1,
+		nargs = "?",
 		complete = function()
 			return vim.tbl_keys(M.servers)
 		end,
@@ -326,9 +707,18 @@ function M._create_commands()
 	})
 
 	vim.api.nvim_create_user_command("DevServerRestart", function(o)
-		M.restart(o.args)
+		if o.args == "" then
+			local in_project, available_servers = M.is_in_project()
+			if in_project and available_servers and #available_servers > 0 then
+				M.restart(available_servers[1])
+			else
+				M._notify("No server configured for current buffer", vim.log.levels.WARN)
+			end
+		else
+			M.restart(o.args)
+		end
 	end, {
-		nargs = 1,
+		nargs = "?",
 		complete = function()
 			return vim.tbl_keys(M.servers)
 		end,
@@ -336,9 +726,18 @@ function M._create_commands()
 	})
 
 	vim.api.nvim_create_user_command("DevServerStop", function(o)
-		M.stop(o.args)
+		if o.args == "" then
+			local in_project, available_servers = M.is_in_project()
+			if in_project and available_servers and #available_servers > 0 then
+				M.stop(available_servers[1])
+			else
+				M._notify("No server configured for current buffer", vim.log.levels.WARN)
+			end
+		else
+			M.stop(o.args)
+		end
 	end, {
-		nargs = 1,
+		nargs = "?",
 		complete = function()
 			return vim.tbl_keys(M.servers)
 		end,
@@ -354,8 +753,9 @@ function M._create_commands()
 			if #servers == 0 then
 				vim.notify("No servers configured", vim.log.levels.INFO)
 			else
+				vim.notify("Development Servers:", vim.log.levels.INFO)
 				for _, s in ipairs(servers) do
-					print(string.format("%-20s %s", s.name, s.status))
+					print(string.format("  %-20s %s", s.name, s.status))
 				end
 			end
 		end
@@ -366,10 +766,27 @@ function M._create_commands()
 		end,
 		desc = "Show server status",
 	})
+
+	vim.api.nvim_create_user_command("DevServerList", function()
+		local servers = M.list()
+		if #servers == 0 then
+			vim.notify("No servers configured", vim.log.levels.INFO)
+			return
+		end
+
+		vim.notify("Available servers:", vim.log.levels.INFO)
+		for _, s in ipairs(servers) do
+			print(string.format("  %-20s %s", s.name, s.status))
+		end
+	end, {
+		desc = "List all configured servers",
+	})
 end
 
 function M._setup_autocmds()
 	local group = vim.api.nvim_create_augroup("DevServerCleanup", { clear = true })
+
+	-- Stop all servers on exit
 	vim.api.nvim_create_autocmd("VimLeavePre", {
 		group = group,
 		callback = function()
@@ -377,6 +794,44 @@ function M._setup_autocmds()
 		end,
 		desc = "Stop all dev servers on exit",
 	})
+
+	-- Setup buffer-local keymaps when entering buffers
+	vim.api.nvim_create_autocmd({ "BufEnter", "BufWinEnter" }, {
+		group = group,
+		callback = function(args)
+			M._setup_buffer_keymaps(args.buf)
+		end,
+		desc = "Setup dev server keymaps for project buffers",
+	})
+
+	-- Auto-start servers if configured
+	if M.config.auto_start then
+		vim.api.nvim_create_autocmd("BufEnter", {
+			group = group,
+			callback = function(args)
+				local in_project, available_servers = M.is_in_project(args.buf)
+				if in_project and available_servers and #available_servers > 0 then
+					for _, server_name in ipairs(available_servers) do
+						local server = M.servers[server_name]
+						if server and not M._is_job_running(server.job_id) then
+							-- Auto-start without showing window
+							local buf_id = M._create_terminal_buffer()
+							if buf_id then
+								local root = M.find_project_root()
+								local cwd = server.config.cwd or root or vim.fn.getcwd()
+								server.job_id = M._start_terminal_in_buffer(buf_id, server.config.cmd, cwd)
+								server.buf_id = buf_id
+								if server.job_id and server.job_id > 0 then
+									M._notify("Auto-started server '" .. server_name .. "'", vim.log.levels.INFO)
+								end
+							end
+						end
+					end
+				end
+			end,
+			desc = "Auto-start dev servers in projects",
+		})
+	end
 end
 
 return M
