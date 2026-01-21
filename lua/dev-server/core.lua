@@ -481,93 +481,6 @@ function M.get_statusline(server_name, bufnr)
 	return ""
 end
 
-function M.register(name, config)
-	if type(config) ~= "table" or not config.cmd or config.cmd == "" then
-		M._notify("Invalid server config (cmd required)", vim.log.levels.ERROR)
-		return false
-	end
-
-	local defaults = {
-		window = M.config.window,
-		detect = {}, -- ← important new field
-	}
-
-	M.servers[name] = {
-		config = vim.tbl_deep_extend("force", defaults, config),
-		job_id = nil,
-		buf_id = nil,
-		win_id = nil,
-		is_visible = false,
-		exit_code = nil,
-	}
-
-	return true
-end
-
--- ============================================================================
--- Buffer-local keymaps (uses first matched server)
--- ============================================================================
-
-function M._setup_buffer_keymaps(bufnr)
-	if not M.config.keymaps then
-		return
-	end
-
-	local _, servers = M.is_in_project(bufnr)
-	if not servers or #servers == 0 then
-		return
-	end
-
-	-- For now we take the first match (you can later add a picker)
-	local primary = servers[1]
-
-	local function map(lhs, callback, desc)
-		if not lhs or lhs == false then
-			return
-		end
-		vim.keymap.set("n", lhs, callback, {
-			buffer = bufnr,
-			noremap = true,
-			silent = true,
-			desc = desc,
-		})
-	end
-
-	map(M.config.keymaps.toggle, function()
-		M.toggle(primary)
-	end, "Toggle dev server")
-	map(M.config.keymaps.restart, function()
-		M.restart(primary)
-	end, "Restart dev server")
-	map(M.config.keymaps.stop, function()
-		M.stop(primary)
-	end, "Stop dev server")
-	map(M.config.keymaps.status, function()
-		vim.notify(("Server '%s': %s"):format(primary, M.get_status(primary)))
-	end, "Dev server status")
-end
-
--- ============================================================================
--- Setup
--- ============================================================================
-
-function M.setup(opts)
-	M.config = vim.tbl_deep_extend("force", M.default_config, opts or {})
-
-	if M.config.servers then
-		for name, cfg in pairs(M.config.servers) do
-			M.register(name, cfg)
-		end
-	end
-
-	M._create_commands()
-	M._setup_autocmds()
-
-	return true
-end
-
--- (the rest — commands & autocmds — remains mostly the same, just showing the important change)
-
 function M._create_commands()
 	vim.api.nvim_create_user_command("DevServerToggle", function(o)
 		if o.args == "" then
@@ -656,6 +569,91 @@ function M._create_commands()
 		end,
 		desc = "Show server status",
 	})
+end
+
+function M.register(name, config)
+	if type(config) ~= "table" or not config.cmd or config.cmd == "" then
+		M._notify("Invalid server config (cmd required)", vim.log.levels.ERROR)
+		return false
+	end
+
+	local defaults = {
+		window = M.config.window,
+		detect = {}, -- ← important new field
+	}
+
+	M.servers[name] = {
+		config = vim.tbl_deep_extend("force", defaults, config),
+		job_id = nil,
+		buf_id = nil,
+		win_id = nil,
+		is_visible = false,
+		exit_code = nil,
+	}
+
+	return true
+end
+
+-- ============================================================================
+-- Buffer-local keymaps (uses first matched server)
+-- ============================================================================
+
+function M._setup_buffer_keymaps(bufnr)
+	if not M.config.keymaps then
+		return
+	end
+
+	local _, servers = M.is_in_project(bufnr)
+	if not servers or #servers == 0 then
+		return
+	end
+
+	-- For now we take the first match (you can later add a picker)
+	local primary = servers[1]
+
+	local function map(lhs, callback, desc)
+		if not lhs or lhs == false then
+			return
+		end
+		vim.keymap.set("n", lhs, callback, {
+			buffer = bufnr,
+			noremap = true,
+			silent = true,
+			desc = desc,
+		})
+	end
+
+	map(M.config.keymaps.toggle, function()
+		M.toggle(primary)
+	end, "Toggle dev server")
+	map(M.config.keymaps.restart, function()
+		M.restart(primary)
+	end, "Restart dev server")
+	map(M.config.keymaps.stop, function()
+		M.stop(primary)
+	end, "Stop dev server")
+	map(M.config.keymaps.status, function()
+		vim.notify(("Server '%s': %s"):format(primary, M.get_status(primary)))
+	end, "Dev server status")
+end
+
+-- ============================================================================
+-- Setup
+-- ============================================================================
+
+function M.setup(opts)
+	M.config = vim.tbl_deep_extend("force", M.default_config, opts or {})
+
+	if M.config.servers then
+		for name, cfg in pairs(M.config.servers) do
+			M.register(name, cfg)
+		end
+	end
+
+	M._create_commands()
+	M._setup_autocmds()
+
+	return true
 end
 
 function M._setup_autocmds()
