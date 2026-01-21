@@ -568,6 +568,96 @@ end
 
 -- (the rest — commands & autocmds — remains mostly the same, just showing the important change)
 
+function M._create_commands()
+	vim.api.nvim_create_user_command("DevServerToggle", function(o)
+		if o.args == "" then
+			local _, servers = M.is_in_project()
+			if servers and #servers > 0 then
+				M.toggle(servers[1])
+			else
+				M._notify("No matching server for current project", vim.log.levels.WARN)
+			end
+		else
+			M.toggle(o.args)
+		end
+	end, {
+		nargs = "?",
+		complete = function()
+			return vim.tbl_keys(M.servers)
+		end,
+		desc = "Toggle development server",
+	})
+
+	vim.api.nvim_create_user_command("DevServerRestart", function(o)
+		if o.args == "" then
+			local _, servers = M.is_in_project()
+			if servers and #servers > 0 then
+				M.restart(servers[1])
+			else
+				M._notify("No matching server for current project", vim.log.levels.WARN)
+			end
+		else
+			M.restart(o.args)
+		end
+	end, {
+		nargs = "?",
+		complete = function()
+			return vim.tbl_keys(M.servers)
+		end,
+		desc = "Restart development server",
+	})
+
+	vim.api.nvim_create_user_command("DevServerStop", function(o)
+		if o.args == "" then
+			local _, servers = M.is_in_project()
+			if servers and #servers > 0 then
+				M.stop(servers[1])
+			else
+				M._notify("No matching server for current project", vim.log.levels.WARN)
+			end
+		else
+			M.stop(o.args)
+		end
+	end, {
+		nargs = "?",
+		complete = function()
+			return vim.tbl_keys(M.servers)
+		end,
+		desc = "Stop development server",
+	})
+
+	vim.api.nvim_create_user_command("DevServerStatus", function(o)
+		if o.args ~= "" then
+			vim.notify("Server '" .. o.args .. "': " .. M.get_status(o.args), vim.log.levels.INFO)
+		else
+			local servers = {}
+			for name, _ in pairs(M.servers) do
+				table.insert(servers, { name = name, status = M.get_status(name) })
+			end
+			table.sort(servers, function(a, b)
+				return a.name < b.name
+			end)
+
+			if #servers == 0 then
+				vim.notify("No servers configured", vim.log.levels.INFO)
+				return
+			end
+
+			local lines = { "Development Servers:" }
+			for _, s in ipairs(servers) do
+				table.insert(lines, string.format("  %-20s %s", s.name, s.status))
+			end
+			vim.notify(table.concat(lines, "\n"), vim.log.levels.INFO)
+		end
+	end, {
+		nargs = "?",
+		complete = function()
+			return vim.tbl_keys(M.servers)
+		end,
+		desc = "Show server status",
+	})
+end
+
 function M._setup_autocmds()
 	local group = vim.api.nvim_create_augroup("DevServer", { clear = true })
 
