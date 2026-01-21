@@ -465,9 +465,10 @@ function M.get_statusline(server_name, bufnr)
 		return ""
 	end
 
-	vim.print("started")
-	vim.print(server_name)
-	local _, servers = M.is_in_project(bufnr)
+	local d, servers = M.is_in_project(bufnr)
+	vim.print("DD")
+	vim.print(d)
+	vim.print(servers)
 	if not servers or #servers == 0 then
 		return ""
 	end
