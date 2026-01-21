@@ -465,13 +465,13 @@ function M.get_statusline(server_name, bufnr)
 		return ""
 	end
 
-	local d, servers = M.is_in_project(bufnr)
-	vim.print("DD")
-	vim.print(d)
-	vim.print(servers)
+	local _, servers = M.is_in_project(bufnr)
 	if not servers or #servers == 0 then
 		return ""
 	end
+
+	vim.print("server Active")
+	vim.print(servers)
 
 	for _, name in ipairs(servers) do
 		local srv = M.servers[name]
