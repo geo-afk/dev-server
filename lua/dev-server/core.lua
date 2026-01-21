@@ -4,6 +4,9 @@ local M = {}
 M.servers = {}
 M.config = {}
 
+-- Debug mode flag
+M.debug = false
+
 -- Default configuration
 M.default_config = {
 	window = {
@@ -31,7 +34,30 @@ M.default_config = {
 	},
 	-- Server definitions with file type associations
 	servers = {},
+	-- Enable debug mode
+	debug = false,
 }
+
+-- ============================================================================
+-- Debug Helpers
+-- ============================================================================
+
+local function debug_log(...)
+	if not M.debug then
+		return
+	end
+	local args = { ... }
+	local msg = table.concat(
+		vim.tbl_map(function(v)
+			if type(v) == "table" then
+				return vim.inspect(v)
+			end
+			return tostring(v)
+		end, args),
+		" "
+	)
+	vim.notify("[DevServer Debug] " .. msg, vim.log.levels.DEBUG)
+end
 
 -- ============================================================================
 -- File Type Detection
@@ -115,16 +141,20 @@ function M.get_buffer_filetype(bufnr)
 
 	local ok, ft = pcall(vim.api.nvim_get_option_value, "filetype", { buf = bufnr })
 	if not ok or ft == "" then
+		debug_log("get_buffer_filetype: no filetype for buffer", bufnr)
 		return nil
 	end
 
+	debug_log("get_buffer_filetype: buffer", bufnr, "has filetype", ft)
 	return ft
 end
 
 ---@param filetype string
 ---@return string[]|nil server_types Compatible server types
 function M.get_servers_for_filetype(filetype)
-	return M.filetype_mappings[filetype]
+	local servers = M.filetype_mappings[filetype]
+	debug_log("get_servers_for_filetype:", filetype, "->", servers)
+	return servers
 end
 
 -- ============================================================================
@@ -143,6 +173,8 @@ function M.find_project_root(start_path)
 		start_path = vim.fn.getcwd()
 	end
 
+	debug_log("find_project_root: starting from", start_path)
+
 	local current_dir = start_path
 	local home_dir = vim.fn.expand("~")
 
@@ -153,6 +185,7 @@ function M.find_project_root(start_path)
 			local marker_path = current_dir .. "/" .. marker
 
 			if vim.fn.filereadable(marker_path) == 1 or vim.fn.isdirectory(marker_path) == 1 then
+				debug_log("find_project_root: found marker", marker, "at", current_dir)
 				return current_dir, marker
 			end
 		end
@@ -165,6 +198,7 @@ function M.find_project_root(start_path)
 		current_dir = parent
 	end
 
+	debug_log("find_project_root: no marker found")
 	return nil, nil
 end
 
@@ -175,27 +209,41 @@ end
 function M.is_in_project(bufnr)
 	bufnr = bufnr or vim.api.nvim_get_current_buf()
 
+	debug_log("is_in_project: checking buffer", bufnr)
+
 	-- Get buffer path
 	local buf_path = vim.api.nvim_buf_get_name(bufnr)
 	if buf_path == "" then
+		debug_log("is_in_project: buffer has no name")
 		return false, nil
 	end
+
+	debug_log("is_in_project: buffer path is", buf_path)
 
 	-- Find project root
 	local root, marker = M.find_project_root(vim.fn.fnamemodify(buf_path, ":p:h"))
 	if not root then
+		debug_log("is_in_project: no project root found")
 		return false, nil
 	end
+
+	debug_log("is_in_project: found root", root, "with marker", marker)
 
 	-- Check if any configured servers match this project
 	local available_servers = {}
 
+	debug_log("is_in_project: configured servers:", vim.tbl_keys(M.servers))
+
 	-- First, check marker-based detection
 	for _, marker_data in ipairs(M.project_markers) do
 		if marker_data[1] == marker and marker_data[2] then
+			debug_log("is_in_project: marker", marker, "suggests servers:", marker_data[2])
 			for _, server_type in ipairs(marker_data[2]) do
 				if M.servers[server_type] then
+					debug_log("is_in_project: adding server", server_type, "(from marker)")
 					table.insert(available_servers, server_type)
+				else
+					debug_log("is_in_project: server", server_type, "suggested but not configured")
 				end
 			end
 		end
@@ -206,14 +254,17 @@ function M.is_in_project(bufnr)
 	if ft then
 		local ft_servers = M.get_servers_for_filetype(ft)
 		if ft_servers then
+			debug_log("is_in_project: filetype", ft, "suggests servers:", ft_servers)
 			for _, server_type in ipairs(ft_servers) do
 				if M.servers[server_type] and not vim.tbl_contains(available_servers, server_type) then
+					debug_log("is_in_project: adding server", server_type, "(from filetype)")
 					table.insert(available_servers, server_type)
 				end
 			end
 		end
 	end
 
+	debug_log("is_in_project: final available servers:", available_servers)
 	return #available_servers > 0, available_servers
 end
 
@@ -541,31 +592,44 @@ end
 function M.get_statusline(server_name, bufnr)
 	bufnr = bufnr or vim.api.nvim_get_current_buf()
 
+	debug_log("get_statusline: called for buffer", bufnr, "with server_name", server_name)
+
 	-- If specific server requested, just show that
 	if server_name then
 		local server = M.servers[server_name]
+		debug_log("get_statusline: checking specific server", server_name)
 		if server and M._is_job_running(server.job_id) then
 			local icon = server.is_visible and "●" or "○"
-			return string.format(" %s %s", icon, server_name)
+			local result = string.format(" %s %s", icon, server_name)
+			debug_log("get_statusline: returning", result)
+			return result
 		end
+		debug_log("get_statusline: server not running or not found")
 		return ""
 	end
 
 	-- Check if current buffer is in a project with available servers
 	local in_project, available_servers = M.is_in_project(bufnr)
+	debug_log("get_statusline: in_project =", in_project, "available_servers =", available_servers)
+
 	if not in_project or not available_servers or #available_servers == 0 then
+		debug_log("get_statusline: not in project or no available servers")
 		return ""
 	end
 
 	-- Show first running server that's relevant to this project
 	for _, server_name_iter in ipairs(available_servers) do
 		local server = M.servers[server_name_iter]
+		debug_log("get_statusline: checking server", server_name_iter, "running =", M._is_job_running(server.job_id))
 		if server and M._is_job_running(server.job_id) then
 			local icon = server.is_visible and "●" or "○"
-			return string.format(" %s %s", icon, server_name_iter)
+			local result = string.format(" %s %s", icon, server_name_iter)
+			debug_log("get_statusline: returning", result)
+			return result
 		end
 	end
 
+	debug_log("get_statusline: no running servers found")
 	return ""
 end
 
@@ -607,6 +671,7 @@ function M.register(name, config)
 		exit_code = nil,
 	}
 
+	debug_log("register: registered server", name, "with config", server_config)
 	return true
 end
 
@@ -679,12 +744,19 @@ function M.setup(opts)
 	-- Merge configuration
 	M.config = vim.tbl_deep_extend("force", M.default_config, opts)
 
+	-- Set debug mode
+	M.debug = M.config.debug or false
+
+	debug_log("setup: initializing with config", M.config)
+
 	-- Register servers
 	if M.config.servers then
 		for name, config in pairs(M.config.servers) do
 			M.register(name, config)
 		end
 	end
+
+	debug_log("setup: registered servers:", vim.tbl_keys(M.servers))
 
 	-- Create commands
 	M._create_commands()
@@ -790,6 +862,41 @@ function M._create_commands()
 		end
 	end, {
 		desc = "List all configured servers",
+	})
+
+	-- Add debug command
+	vim.api.nvim_create_user_command("DevServerDebug", function()
+		vim.notify("DevServer Debug Info:", vim.log.levels.INFO)
+		print("Debug mode: " .. tostring(M.debug))
+		print("Configured servers: " .. vim.inspect(vim.tbl_keys(M.servers)))
+		print("\nCurrent buffer info:")
+		local bufnr = vim.api.nvim_get_current_buf()
+		print("  Buffer: " .. bufnr)
+		print("  Path: " .. vim.api.nvim_buf_get_name(bufnr))
+		print("  Filetype: " .. (M.get_buffer_filetype(bufnr) or "none"))
+
+		local root, marker = M.find_project_root()
+		print("\nProject detection:")
+		print("  Root: " .. (root or "not found"))
+		print("  Marker: " .. (marker or "none"))
+
+		local in_project, available = M.is_in_project(bufnr)
+		print("\nProject status:")
+		print("  In project: " .. tostring(in_project))
+		print("  Available servers: " .. vim.inspect(available or {}))
+
+		print("\nServer states:")
+		for name, server in pairs(M.servers) do
+			print(string.format("  %s:", name))
+			print(string.format("    Status: %s", M.get_status(name)))
+			print(string.format("    Job ID: %s", tostring(server.job_id)))
+			print(string.format("    Running: %s", tostring(M._is_job_running(server.job_id))))
+		end
+
+		print("\nStatusline output:")
+		print("  " .. M.get_statusline())
+	end, {
+		desc = "Show DevServer debug information",
 	})
 end
 
